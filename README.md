@@ -1,3 +1,13 @@
+---
+title: LiveLyrics
+emoji: 🎵
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 5000
+pinned: false
+---
+
 # 🎵 LiveLyrics — Real-Time Lyrics Overlay
 
 A production-quality system that detects the currently playing song from **any app**, fetches synchronized lyrics, and displays them in real-time — with AI explanations, translation, and a floating desktop widget.
