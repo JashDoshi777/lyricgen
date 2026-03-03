@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LiveLyrics Widget</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: transparent;
+            color: #fafafa;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        .widget {
+            background: rgba(15, 15, 18, 0.82);
+            backdrop-filter: blur(32px) saturate(180%);
+            -webkit-backdrop-filter: blur(32px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 16px 20px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            cursor: grab;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .widget:active {
+            cursor: grabbing;
+        }
+
+        /* Compact Header */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .logo {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .song-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .song-title {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.3;
+        }
+
+        .song-artist {
+            font-size: 11px;
+            color: #a1a1aa;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .controls {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .btn {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            border: none;
+            background: rgba(255, 255, 255, 0.08);
+            color: #a1a1aa;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fafafa;
+        }
+
+        /* Current Lyric */
+        .current-lyric {
+            font-family: 'Outfit', sans-serif;
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.4;
+            text-align: center;
+            padding: 8px 0;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .current-lyric.active {
+            color: #fafafa;
+            text-shadow: 0 0 30px rgba(99, 102, 241, 0.3);
+        }
+
+        .current-lyric.empty {
+            color: #52525b;
+            font-size: 14px;
+            font-weight: 400;
+        }
+
+        /* Expanded Lyrics */
+        .expanded-lyrics {
+            flex: 1;
+            overflow-y: auto;
+            display: none;
+            flex-direction: column;
+            gap: 4px;
+            padding: 4px 0;
+        }
+
+        .expanded-lyrics::-webkit-scrollbar {
+            width: 3px;
+        }
+
+        .expanded-lyrics::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .expanded-lyrics::-webkit-scrollbar-thumb {
+            background: #3f3f46;
+            border-radius: 2px;
+        }
+
+        .widget.expanded .expanded-lyrics {
+            display: flex;
+        }
+
+        .widget.expanded .current-lyric {
+            display: none;
+        }
+
+        .lyric-row {
+            padding: 6px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #52525b;
+            transition: all 0.3s;
+            text-align: center;
+        }
+
+        .lyric-row.active {
+            color: #fafafa;
+            font-weight: 600;
+            font-size: 15px;
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+        }
+
+        .lyric-row.near {
+            color: #a1a1aa;
+        }
+
+        /* Status dot */
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #ef4444;
+            flex-shrink: 0;
+        }
+
+        .status-dot.connected {
+            background: #22c55e;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="widget" id="widget">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">♪</div>
+            <div class="song-info">
+                <div class="song-title" id="songTitle">Waiting for music...</div>
+                <div class="song-artist" id="songArtist">Play a song to start</div>
+            </div>
+            <div class="controls">
+                <div class="status-dot" id="statusDot"></div>
+                <button class="btn" id="expandBtn" title="Toggle expanded">⬆</button>
+            </div>
+        </div>
+
+        <!-- Compact: Single line -->
+        <div class="current-lyric empty" id="currentLyric">♫ Waiting for lyrics...</div>
+
+        <!-- Expanded: Full lyrics -->
+        <div class="expanded-lyrics" id="expandedLyrics"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // ── State ──────────────────────────────────────
+        let isExpanded = false;
+        let lyrics = [];
+        let currentIndex = -1;
+
+        // ── Elements ───────────────────────────────────
+        const widget = document.getElementById('widget');
+        const songTitle = document.getElementById('songTitle');
+        const songArtist = document.getElementById('songArtist');
+        const currentLyric = document.getElementById('currentLyric');
+        const expandedLyrics = document.getElementById('expandedLyrics');
+        const expandBtn = document.getElementById('expandBtn');
+        const statusDot = document.getElementById('statusDot');
+
+        // ── Drag ───────────────────────────────────────
+        let isDragging = false;
+        let dragStartX, dragStartY;
+
+        widget.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            dragStartX = e.screenX;
+            dragStartY = e.screenY;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const deltaX = e.screenX - dragStartX;
+            const deltaY = e.screenY - dragStartY;
+            if (window.electronAPI) {
+                window.electronAPI.moveWindow(deltaX, deltaY);
+            }
+            dragStartX = e.screenX;
+            dragStartY = e.screenY;
+        });
+
+        document.addEventListener('mouseup', () => { isDragging = false; });
+
+        // ── Expand/Collapse ────────────────────────────
+        expandBtn.addEventListener('click', () => {
+            isExpanded = !isExpanded;
+            widget.classList.toggle('expanded', isExpanded);
+            expandBtn.textContent = isExpanded ? '⬇' : '⬆';
+            if (window.electronAPI) {
+                window.electronAPI.toggleExpanded(isExpanded);
+            }
+        });
+
+        // ── WebSocket ──────────────────────────────────
+        const socket = io('http://localhost:5000', {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+        });
+
+        socket.on('connect', () => {
+            statusDot.classList.add('connected');
+            socket.emit('request_current');
+        });
+
+        socket.on('disconnect', () => {
+            statusDot.classList.remove('connected');
+        });
+
+        socket.on('song_detected', (data) => {
+            songTitle.textContent = data.title || 'Unknown';
+            songArtist.textContent = data.artist || 'Unknown Artist';
+        });
+
+        socket.on('lyrics_loaded', (data) => {
+            lyrics = data.lyrics || [];
+            currentIndex = -1;
+            renderExpandedLyrics();
+        });
+
+        socket.on('lyric_changed', (data) => {
+            currentIndex = data.index;
+            const line = data.line;
+
+            // Update compact view
+            currentLyric.textContent = line.text;
+            currentLyric.classList.remove('empty');
+            currentLyric.classList.add('active');
+
+            // Update expanded view
+            updateExpandedActive();
+        });
+
+        // ── Render ─────────────────────────────────────
+        function renderExpandedLyrics() {
+            expandedLyrics.innerHTML = '';
+            lyrics.forEach((line, i) => {
+                const row = document.createElement('div');
+                row.className = 'lyric-row';
+                row.textContent = line.text;
+                row.dataset.index = i;
+                expandedLyrics.appendChild(row);
+            });
+        }
+
+        function updateExpandedActive() {
+            const rows = expandedLyrics.querySelectorAll('.lyric-row');
+            rows.forEach((row, i) => {
+                const distance = Math.abs(i - currentIndex);
+                row.classList.remove('active', 'near');
+                if (i === currentIndex) {
+                    row.classList.add('active');
+                    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } else if (distance <= 2) {
+                    row.classList.add('near');
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>
