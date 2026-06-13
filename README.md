@@ -1,13 +1,3 @@
----
-title: LiveLyrics
-emoji: 🎵
-colorFrom: purple
-colorTo: indigo
-sdk: docker
-app_port: 5000
-pinned: false
----
-
 <div align="center">
   <br />
   <h1>🎵 LiveLyrics — Real-Time Lyrics Overlay</h1>
