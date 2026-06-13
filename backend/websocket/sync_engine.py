@@ -20,7 +20,7 @@ import threading
 # ── Tuning Constants ────────────────────────────────
 
 # Show lyrics slightly AHEAD of the song
-LOOKAHEAD_SEC = 0.2
+LOOKAHEAD_SEC = 0.5
 
 # Position broadcast interval (seconds)
 POSITION_BROADCAST_INTERVAL = 0.15
@@ -80,6 +80,7 @@ class SyncEngine:
             self._anchor_position = pos_sec
             self._anchor_time = time.monotonic()
             self._find_current_index(pos_sec + LOOKAHEAD_SEC)
+            self._pending_backward = None
 
             print(f"[SyncEngine] Started: {len(lyrics)} lines, pos={position_ms}ms")
 
@@ -97,9 +98,11 @@ class SyncEngine:
         """
         Process a new SMTC position reading.
 
-        Rules:
-        - Same position as before → skip (SMTC hasn't updated, clock keeps ticking)
-        - New position → snap clock to it immediately
+        Smart rules to avoid snapping to stale/bad positions:
+        - position=0 when we're past 5s → reject (session lost)
+        - Backward jump >1s → only accept if confirmed by 2 consecutive readings
+        - Forward correction → always accept
+        - Small drift (<1s) → always accept
         """
         with self._lock:
             if not self.lyrics:
@@ -114,15 +117,50 @@ class SyncEngine:
             now = time.monotonic()
             smtc_sec = position_ms / 1000.0
             our_position = self._get_position_unlocked()
-            drift = smtc_sec - our_position
+            drift = smtc_sec - our_position  # positive = forward, negative = backward
 
-            # Always snap to new SMTC position
-            self._anchor_position = smtc_sec
-            self._anchor_time = now
             self._last_smtc_ms = position_ms
 
+            # ── Rule 1: Reject position=0 when we're past 5s ──
+            # This happens when SMTC session is lost (tab closed, player crashed)
+            if position_ms == 0 and our_position > 5.0:
+                print(f"[SyncEngine] Rejected pos=0 (session lost? our_pos={our_position:.1f}s)")
+                return
+
+            # ── Rule 2: Handle backward jumps ──
+            if drift < -1.0:
+                # Large backward jump — could be frozen SMTC or a real seek
+                # Only accept if we've seen a similar backward position before
+                if self._pending_backward is None:
+                    self._pending_backward = smtc_sec
+                    self._pending_backward_count = 1
+                    print(f"[SyncEngine] Backward {drift:+.1f}s → pending confirmation (SMTC={smtc_sec:.1f}s)")
+                    return
+                elif abs(smtc_sec - self._pending_backward) < 2.0:
+                    self._pending_backward_count += 1
+                    if self._pending_backward_count >= 2:
+                        # Confirmed — it's a real seek backward
+                        print(f"[SyncEngine] Backward CONFIRMED → snap to {smtc_sec:.1f}s")
+                        self._pending_backward = None
+                        # Fall through to snap
+                    else:
+                        return
+                else:
+                    # Different backward position — reset pending
+                    self._pending_backward = smtc_sec
+                    self._pending_backward_count = 1
+                    return
+            else:
+                # Forward or small drift — clear any pending backward
+                self._pending_backward = None
+
+            # ── Snap to the position ──
+            self._anchor_position = smtc_sec
+            self._anchor_time = now
+
             if abs(drift) > 0.3:
-                print(f"[SyncEngine] Sync: {our_position:.1f}s → {smtc_sec:.1f}s (drift={drift:+.2f}s)")
+                direction = "FWD" if drift > 0 else "BWD"
+                print(f"[SyncEngine] {direction}: {our_position:.1f}s → {smtc_sec:.1f}s (drift={drift:+.2f}s)")
 
             # Update line if needed
             new_pos = smtc_sec + LOOKAHEAD_SEC
@@ -283,7 +321,7 @@ class SyncEngine:
         })
 
     def _emit_lyrics_loaded(self):
-        """Emit full lyrics with pre-computed durations."""
+        """Emit full lyrics with pre-computed durations and current position."""
         line_durations = []
         for i, line in enumerate(self.lyrics):
             if i + 1 < len(self.lyrics):
@@ -292,10 +330,14 @@ class SyncEngine:
                 dur = 5000
             line_durations.append(max(500, min(dur, 30000)))
 
+        # Include current position so the client can reset its clock accurately
+        current_pos = self._get_position_unlocked()
+
         self.socketio.emit('lyrics_loaded', {
             'lyrics': self.lyrics,
             'durations': line_durations,
             'synced': any(l.get('time', 0) > 0 for l in self.lyrics),
             'total': len(self.lyrics),
+            'position_sec': round(current_pos, 3),
             'server_time': time.time(),
         })

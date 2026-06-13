@@ -2,14 +2,25 @@ import { useEffect, useRef, useCallback } from 'react';
 import useStore from './useStore';
 
 /**
- * Client-side sync clock — v4.0 (Hybrid Clock)
+ * Client-side sync clock — v5.0 (Adaptive Speed Clock)
  *
- * The clock ALWAYS advances when playing. Server position_sync events
- * snap the anchor — if SMTC freezes, our clock just keeps ticking.
- * Only explicit pause freezes it.
+ * The clock ALWAYS advances when playing. Instead of hard-snapping to
+ * server position (which causes jarring jumps), the clock adjusts its
+ * SPEED to smoothly converge on the correct position:
+ *
+ *   - Behind by >0.5s → run at 1.15x speed (catches up)
+ *   - Ahead by >0.5s → run at 0.85x speed (slows down)
+ *   - Within ±0.5s → run at 1.0x (normal)
+ *
+ * This is "clock recovery" — the same approach used by professional
+ * media players and audio synchronization systems.
  */
 
-const LOOKAHEAD_SEC = 0.2;
+const LOOKAHEAD_SEC = 0.5;
+
+// Adaptive speed constants
+const DRIFT_THRESHOLD = 0.3; // Start correcting at 0.3s drift
+const SNAP_THRESHOLD = 2.0;  // Hard-snap above 2s (was 3s — too slow)
 
 export default function useSyncClock() {
     const {
@@ -20,10 +31,11 @@ export default function useSyncClock() {
     } = useStore();
 
     const clockRef = useRef({
-        // Anchor-based clock: position = anchorPos + (now - anchorTime)
+        // Anchor-based clock: position = anchorPos + elapsed * speed
         anchorPosition: 0,
         anchorTime: 0,      // performance.now() / 1000
         isRunning: false,
+        speed: 1.0,         // Adaptive clock speed
 
         // Lyrics
         lyrics: [],
@@ -34,6 +46,10 @@ export default function useSyncClock() {
         latencyMs: 0,
         latencySamples: [],
 
+        // Server position for drift comparison
+        lastServerPos: 0,
+        lastServerTime: 0,   // performance.now() / 1000 when received
+
         // rAF
         rafId: null,
     });
@@ -41,7 +57,8 @@ export default function useSyncClock() {
     const getPosition = useCallback(() => {
         const clock = clockRef.current;
         if (!clock.isRunning) return clock.anchorPosition;
-        return clock.anchorPosition + (performance.now() / 1000 - clock.anchorTime);
+        const elapsed = performance.now() / 1000 - clock.anchorTime;
+        return clock.anchorPosition + elapsed * clock.speed;
     }, []);
 
     // ── rAF Tick ──────────────────────────────────
@@ -91,6 +108,9 @@ export default function useSyncClock() {
                 return 5000;
             });
 
+            // Force re-evaluation on new lyrics
+            clock.currentIndex = -1;
+
             if (!clock.rafId) {
                 clock.isRunning = true;
                 clock.rafId = requestAnimationFrame(tick);
@@ -108,42 +128,83 @@ export default function useSyncClock() {
     useEffect(() => {
         const clock = clockRef.current;
         if (isPlaying && !clock.isRunning) {
-            // Resuming — re-anchor from current position
             clock.anchorTime = performance.now() / 1000;
             clock.isRunning = true;
         } else if (!isPlaying && clock.isRunning) {
-            // Pausing — save current position as anchor
             clock.anchorPosition = getPosition();
             clock.anchorTime = performance.now() / 1000;
             clock.isRunning = false;
         }
     }, [isPlaying, getPosition]);
 
-    // ── Server Position Sync ──────────────────────
+    // ── Server Position Sync (Adaptive Speed) ─────
 
     const handlePositionSync = useCallback((data) => {
         const clock = clockRef.current;
         if (!clock.lyrics.length) return;
 
+        const now = performance.now() / 1000;
         const serverPos = data.position_sec + (clock.latencyMs / 1000);
         const isServerPlaying = data.is_playing;
 
-        // Snap anchor to server position
-        clock.anchorPosition = serverPos;
-        clock.anchorTime = performance.now() / 1000;
+        // Get our current position
+        const ourPos = getPosition();
+        const drift = serverPos - ourPos; // positive = we're behind, negative = we're ahead
+
+        // Store for reference
+        clock.lastServerPos = serverPos;
+        clock.lastServerTime = now;
+
+        if (!isServerPlaying) {
+            // Server paused — freeze our clock
+            clock.anchorPosition = ourPos;
+            clock.anchorTime = now;
+            clock.isRunning = false;
+            clock.speed = SPEED_NORMAL;
+            return;
+        }
+
+        if (Math.abs(drift) > SNAP_THRESHOLD) {
+            // Huge drift (>2s) — hard-snap immediately (seek or stall recovery)
+            clock.anchorPosition = serverPos;
+            clock.anchorTime = now;
+            clock.speed = 1.0;
+            console.log(`[SyncClock] SNAP: ${ourPos.toFixed(1)}s → ${serverPos.toFixed(1)}s (drift=${drift.toFixed(1)}s)`);
+        } else if (drift > DRIFT_THRESHOLD) {
+            // We're behind — proportional speed up (bigger drift = faster)
+            // Maps drift 0.3-2.0 → speed 1.3-2.0
+            const speedBoost = 1.0 + Math.min(drift, 2.0);
+            clock.anchorPosition = ourPos;
+            clock.anchorTime = now;
+            clock.speed = speedBoost;
+        } else if (drift < -DRIFT_THRESHOLD) {
+            // We're ahead — proportional slow down
+            const absDrift = Math.abs(drift);
+            const speedSlow = Math.max(0.3, 1.0 - absDrift * 0.5);
+            clock.anchorPosition = ourPos;
+            clock.anchorTime = now;
+            clock.speed = speedSlow;
+        } else {
+            // Within tolerance — normal speed
+            clock.anchorPosition = ourPos;
+            clock.anchorTime = now;
+            clock.speed = 1.0;
+        }
+
         clock.isRunning = isServerPlaying;
-    }, []);
+    }, [getPosition]);
 
     const handleLyricChanged = useCallback((data) => {
+        // Backup sync from lyric_changed — only for large drift
         const clock = clockRef.current;
         if (!clock.lyrics.length) return;
 
-        // Backup sync from lyric_changed
         const serverPos = data.position_sec;
         const myPos = getPosition();
-        if (Math.abs(serverPos - myPos) > 0.5) {
+        if (Math.abs(serverPos - myPos) > SNAP_THRESHOLD) {
             clock.anchorPosition = serverPos;
             clock.anchorTime = performance.now() / 1000;
+            clock.speed = SPEED_NORMAL;
         }
     }, [getPosition]);
 
@@ -164,6 +225,7 @@ export default function useSyncClock() {
         clock.anchorTime = performance.now() / 1000;
         clock.currentIndex = -1;
         clock.isRunning = true;
+        clock.speed = SPEED_NORMAL;
         console.log(`[SyncClock] Reset to ${positionMs}ms`);
     }, []);
 
@@ -172,6 +234,7 @@ export default function useSyncClock() {
         clock.anchorPosition = getPosition();
         clock.anchorTime = performance.now() / 1000;
         clock.isRunning = false;
+        clock.speed = SPEED_NORMAL;
     }, [getPosition]);
 
     const handleResume = useCallback((data) => {
@@ -181,6 +244,7 @@ export default function useSyncClock() {
         }
         clock.anchorTime = performance.now() / 1000;
         clock.isRunning = true;
+        clock.speed = SPEED_NORMAL;
     }, []);
 
     return {

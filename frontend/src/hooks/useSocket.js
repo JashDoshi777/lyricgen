@@ -23,6 +23,7 @@ export default function useSocket() {
         resetClock,
         handlePause,
         handleResume,
+        clockRef,
     } = useSyncClock();
 
     useEffect(() => {
@@ -57,9 +58,8 @@ export default function useSocket() {
             console.log('[WS] Song detected:', data);
             setCurrentSong(data);
             setIsPlaying(true);
-            // Reset the client-side clock for the new song
-            resetClock(data.position_ms || 0);
-            // Fetch history on new song
+            // DON'T reset clock here — position is stale from detection time.
+            // Clock will be reset when lyrics_loaded arrives with fresh position.
             fetch(`${BACKEND_URL}/api/history`)
                 .then((r) => r.json())
                 .then((d) => setHistory(d.history || []))
@@ -67,8 +67,20 @@ export default function useSocket() {
         });
 
         socket.on('lyrics_loaded', (data) => {
-            console.log('[WS] Lyrics loaded:', data.total, 'lines, synced:', data.synced);
+            console.log('[WS] Lyrics loaded:', data.total, 'lines, synced:', data.synced, 'pos:', data.position_sec);
             setLyrics(data.lyrics || [], data.synced || false, data.durations || []);
+
+            // Reset clock with compensation for pipeline delay:
+            // 1. Network latency (measured via ping/pong)
+            // 2. React render time (~300ms estimate)
+            // Without this, lyrics always start behind because the position
+            // is already stale by the time the user sees the first lyric.
+            const serverPos = (data.position_sec || 0) * 1000;
+            const networkLatency = clockRef.current?.latencyMs || 150;
+            const renderDelay = 300;
+            const compensatedPos = serverPos + networkLatency + renderDelay;
+            console.log(`[WS] Clock reset: server=${serverPos.toFixed(0)}ms + latency=${networkLatency.toFixed(0)}ms + render=${renderDelay}ms = ${compensatedPos.toFixed(0)}ms`);
+            resetClock(compensatedPos);
         });
 
         socket.on('lyric_changed', (data) => {

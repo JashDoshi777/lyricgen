@@ -1,5 +1,4 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import useStore from '../hooks/useStore';
 import SpotifyMode from './SpotifyMode';
 import KaraokeMode from './KaraokeMode';
@@ -84,11 +83,7 @@ export default function LyricsPanel() {
     if (lyrics.length === 0) {
         return (
             <div className="flex-1 flex items-center justify-center p-8">
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="text-center"
-                >
+                <div className="text-center">
                     <div className="text-6xl mb-4 opacity-20">♫</div>
                     <p className="text-[var(--text-muted)] text-lg font-medium">
                         No lyrics loaded
@@ -96,7 +91,7 @@ export default function LyricsPanel() {
                     <p className="text-[var(--text-muted)] text-sm mt-1 opacity-60">
                         Lyrics will appear when a song is detected
                     </p>
-                </motion.div>
+                </div>
             </div>
         );
     }
@@ -109,27 +104,23 @@ export default function LyricsPanel() {
                 className="flex-1 glass overflow-y-auto p-6 relative"
                 style={{ borderRadius: 'var(--radius-lg, 24px)', maxHeight: 'calc(100vh - 240px)' }}
             >
-                <AnimatePresence mode="wait">
-                    {displayMode === 'karaoke' ? (
-                        <KaraokeMode
-                            key="karaoke"
-                            lyrics={lyrics}
-                            currentIndex={currentLineIndex}
-                            lineDuration={currentLineDuration}
-                            translations={translationEnabled ? translations : {}}
-                            onLineClick={handleLyricClick}
-                        />
-                    ) : (
-                        <SpotifyMode
-                            key="spotify"
-                            lyrics={lyrics}
-                            currentIndex={currentLineIndex}
-                            lineDuration={currentLineDuration}
-                            translations={translationEnabled ? translations : {}}
-                            onLineClick={handleLyricClick}
-                        />
-                    )}
-                </AnimatePresence>
+                {displayMode === 'karaoke' ? (
+                    <KaraokeMode
+                        lyrics={lyrics}
+                        currentIndex={currentLineIndex}
+                        lineDuration={currentLineDuration}
+                        translations={translationEnabled ? translations : {}}
+                        onLineClick={handleLyricClick}
+                    />
+                ) : (
+                    <SpotifyMode
+                        lyrics={lyrics}
+                        currentIndex={currentLineIndex}
+                        lineDuration={currentLineDuration}
+                        translations={translationEnabled ? translations : {}}
+                        onLineClick={handleLyricClick}
+                    />
+                )}
             </div>
 
             {/* Explanation panel (conditional) */}

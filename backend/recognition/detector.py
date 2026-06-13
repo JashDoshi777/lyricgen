@@ -93,8 +93,9 @@ class SongDetector:
                 if self.current_song:
                     media_info = get_media_info()
                     if media_info and media_info.get('title'):
-                        position_ms = media_info.get('position_ms', 0)
-                        status = media_info.get('status', 'unknown')
+                        position_ms = media_info.get('position_ms') or 0
+                        position_ms = int(position_ms) if position_ms else 0
+                        status = media_info.get('status') or 'unknown'
 
                         # Forward position to sync engine
                         if position_ms > 0 and self.on_position_update:

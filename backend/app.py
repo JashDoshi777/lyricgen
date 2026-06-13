@@ -75,18 +75,21 @@ def on_song_changed(song_info):
         lines = lyrics_data['lines']
 
         # Get a FRESH SMTC position right now — not the stale one from detection.
-        # The song has been playing while we were fetching/loading lyrics,
-        # so the detection-time position is already outdated.
         fresh_media = get_media_info()
-        if fresh_media and fresh_media.get('position_ms', 0) > 0:
+        if fresh_media and (fresh_media.get('position_ms') or 0) > 0:
             initial_position = fresh_media['position_ms']
-            print(f"[App] Fresh SMTC position: {initial_position}ms")
         else:
-            # Fallback: estimate from detection-time position + elapsed time
-            detection_pos = song_info.get('position_ms', 0)
-            # We can't know exact elapsed time, but it's better than stale pos
-            initial_position = detection_pos
-            print(f"[App] Using detection-time position: {initial_position}ms (SMTC unavailable)")
+            initial_position = song_info.get('position_ms') or 0
+
+        # SMTC often reports ~14ms for new songs because YouTube/browsers
+        # haven't updated their media session yet. But we KNOW:
+        #   - Detection interval is 3s (song was playing before we noticed)
+        #   - Lyrics fetch took some time too
+        # So if SMTC says < 2s, the position is stale—add minimum compensation.
+        if initial_position < 2000:
+            compensation = int(Config.DETECTION_INTERVAL * 1000) + 2000
+            print(f"[App] SMTC position stale ({initial_position}ms < 2s), adding {compensation}ms compensation")
+            initial_position += compensation
 
         print(f"[App] Starting sync: {len(lines)} lines, pos={initial_position}ms")
         sync_engine.start_sync(lines, initial_position)
@@ -100,6 +103,7 @@ detector.on_position_update = lambda pos_ms: sync_engine.resync(pos_ms)
 
 def on_status_changed(status, position_ms=0):
     """Called when the detector notices a playback status change (pause/resume)."""
+    position_ms = position_ms or 0  # Guard against None
     if status == 'paused':
         print('[App] Song paused — freezing lyrics')
         sync_engine.pause()
