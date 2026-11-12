@@ -26,6 +26,8 @@ EXPOSE 5000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV FRONTEND_DIST=/app/backend/static
+ENV FLASK_HOST=0.0.0.0
 ENV HOST=0.0.0.0
 ENV PORT=5000
 

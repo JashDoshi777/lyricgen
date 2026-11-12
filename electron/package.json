@@ -1,13 +1,103 @@
 {
-    "name": "live-lyrics-widget",
-    "version": "1.0.0",
-    "description": "Floating lyrics overlay widget",
-    "main": "main.js",
-    "scripts": {
-        "start": "electron ."
+  "name": "livelyrics",
+  "version": "2.0.0",
+  "description": "Live synced lyrics for whatever you are playing, with a floating widget",
+  "main": "main.js",
+  "scripts": {
+    "start": "node launch.js",
+    "build:frontend": "cd ../frontend && npm ci && npm run build",
+    "build:backend": "cd ../backend && python -m pip install -r requirements.txt -r requirements-build.txt && python -m PyInstaller livelyrics-backend.spec --noconfirm",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.18.0",
+    "electron": "44.9.3"
+  },
+  "productName": "LiveLyrics",
+  "author": "LiveLyrics",
+  "build": {
+    "appId": "com.livelyrics.app",
+    "productName": "LiveLyrics",
+    "copyright": "LiveLyrics",
+    "directories": {
+      "output": "release"
     },
-    "dependencies": {
-        "electron": "^28.0.0",
-        "socket.io-client": "^4.7.2"
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/livelyrics-backend",
+        "to": "backend"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": "-",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "LiveLyrics reads what is playing in Spotify, Music and your browser to show synced lyrics.",
+        "LSApplicationCategoryType": "public.app-category.music"
+      },
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "LiveLyrics",
+      "icon": "assets/icon.icns",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 140,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "shortcutName": "LiveLyrics"
     }
+  }
 }

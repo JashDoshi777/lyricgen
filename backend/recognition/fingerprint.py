@@ -25,7 +25,7 @@ def generate_fingerprint(wav_data):
     """
     fpcalc_path = Config.FPCALC_PATH
 
-    if not os.path.exists(fpcalc_path):
+    if not fpcalc_path or not os.path.exists(fpcalc_path):
         print(f"[Fingerprint] fpcalc not found at {fpcalc_path}")
         return None, None
 
@@ -37,13 +37,16 @@ def generate_fingerprint(wav_data):
 
         # Run fpcalc
         result = subprocess.run(
-            [fpcalc_path, '-raw', '-json', tmp_path],
+            [fpcalc_path, '-json', tmp_path],
             capture_output=True,
             text=True,
             timeout=30
         )
 
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
         if result.returncode != 0:
             print(f"[Fingerprint] fpcalc error: {result.stderr}")

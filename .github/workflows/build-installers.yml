@@ -1,0 +1,57 @@
+name: Build installers
+
+# Builds the Windows .exe installer and the macOS .dmg (Apple Silicon + Intel).
+# Run it from the Actions tab ("Run workflow"), or push a tag like v2.0.0.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            flags: ''
+          - os: macos-latest        # Apple Silicon
+            script: dist:mac
+            flags: '--arm64'
+          - os: macos-15-intel      # Intel Macs
+            script: dist:mac
+            flags: '--x64'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Build web UI
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build standalone backend (PyInstaller)
+        run: |
+          cd backend
+          python -m pip install -r requirements.txt -r requirements-build.txt
+          python -m PyInstaller livelyrics-backend.spec --noconfirm
+
+      - name: Build installer
+        run: |
+          cd electron
+          npm ci
+          npm run ${{ matrix.script }} -- ${{ matrix.flags }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveLyrics-${{ matrix.os }}
+          path: |
+            electron/release/*.dmg
+            electron/release/*.exe

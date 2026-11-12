@@ -61,6 +61,13 @@ def parse_lrc(lrc_text):
             })
 
     # Sort by time
+    # Honour a global [offset:+/-ms] tag (positive = lyrics appear earlier)
+    off = re.search(r'\[offset:\s*([+-]?\d+)\s*\]', lrc_text, re.IGNORECASE)
+    if off:
+        shift = int(off.group(1)) / 1000.0
+        for l in lines:
+            l['time'] = round(max(0.0, l['time'] - shift), 3)
+
     lines.sort(key=lambda x: x['time'])
     return lines
 
@@ -68,7 +75,7 @@ def parse_lrc(lrc_text):
 def parse_plain_lyrics(text):
     """
     Convert plain text lyrics (no timestamps) into a list of lines.
-    Assigns approximate timestamps (3 seconds per line).
+    time is None: the UI shows these as a static, scrollable text.
 
     Args:
         text: Plain lyrics text.
@@ -80,13 +87,10 @@ def parse_plain_lyrics(text):
         return []
 
     lines = []
-    for i, line in enumerate(text.strip().split('\n')):
+    for line in text.strip().split('\n'):
         line = line.strip()
         if line:
-            lines.append({
-                'time': i * 3.0,
-                'text': line
-            })
+            lines.append({'time': None, 'text': line})
 
     return lines
 

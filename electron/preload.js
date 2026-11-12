@@ -1,11 +1,11 @@
-/**
- * Live Lyrics Widget — Preload Script
- * Exposes safe IPC bridge to the renderer process.
- */
-
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-    moveWindow: (deltaX, deltaY) => ipcRenderer.send('window-move', { x: deltaX, y: deltaY }),
-    toggleExpanded: (expanded) => ipcRenderer.send('toggle-expanded', expanded),
+  platform: process.platform,
+  close: () => ipcRenderer.send('close'),
+  togglePin: () => ipcRenderer.send('toggle-pin'),
+  resizeBy: (dx, dy) => ipcRenderer.send('resize-by', dx, dy),
+  openWidget: () => ipcRenderer.send('open-widget'),
+  openKeysFile: () => ipcRenderer.send('open-env'),
+  restart: () => ipcRenderer.send('restart'),
 });

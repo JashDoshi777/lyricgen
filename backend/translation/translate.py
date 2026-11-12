@@ -4,7 +4,7 @@ Translates lyric lines to target language with caching.
 """
 
 import requests
-from cache.chroma_cache import get_cache
+from cache.store import get_cache
 
 
 MYMEMORY_API = 'https://api.mymemory.translated.net/get'
@@ -32,7 +32,7 @@ def translate_text(text, target_lang='en', source_lang='auto'):
         return cached
 
     try:
-        lang_pair = f'{source_lang}|{target_lang}'
+        lang_pair = f"{'Autodetect' if source_lang == 'auto' else source_lang}|{target_lang}"
 
         response = requests.get(
             MYMEMORY_API,
@@ -71,15 +71,10 @@ def translate_lyrics(lines, target_lang='en', source_lang='auto'):
     Returns:
         list: List of {time, text, translation} dicts.
     """
-    translated_lines = []
-    for line in lines:
-        translated_text = translate_text(line['text'], target_lang, source_lang)
-        translated_lines.append({
-            'time': line['time'],
-            'text': line['text'],
-            'translation': translated_text
-        })
-    return translated_lines
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        texts = list(pool.map(lambda l: translate_text(l['text'], target_lang, source_lang), lines))
+    return [{'time': l.get('time'), 'text': l['text'], 'translation': t} for l, t in zip(lines, texts)]
 
 
 # Supported languages

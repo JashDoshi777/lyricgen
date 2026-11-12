@@ -18,6 +18,52 @@
 
 ---
 
+## 🚀 Quick start (macOS & Windows)
+
+```bash
+# 1. Backend
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip ...
+cp .env.example .env                             # all keys optional
+
+# 2. Frontend (build once; the backend serves it at http://localhost:5000)
+cd ../frontend && npm install && npm run build
+
+# 3a. Web app:      cd backend && .venv/bin/python app.py   → open http://localhost:5000
+# 3b. Desktop widget (starts the backend for you):
+cd ../electron && npm install && npm start
+```
+
+**Detection:** macOS reads Spotify / Apple Music directly (and YouTube in Chrome-family browsers; enable
+*View → Developer → Allow JavaScript from Apple Events* for exact position). Windows uses SMTC.
+Optional fingerprint fallback: `brew install chromaprint blackhole-2ch` + `ACOUSTID_API_KEY`.
+
+**Widget:** drag the top bar, resize with the corner grip, `Cmd/Ctrl+Shift+L` show/hide,
+`Cmd/Ctrl+Shift+K` click-through lock, tray menu for more.
+
+---
+
+## Installers (macOS .dmg, Windows .exe)
+
+Each installer bundles the app, the lyrics engine and your icon. Users need nothing else installed.
+
+```bash
+cd frontend && npm ci && npm run build                     # 1. web UI
+cd ../backend && pip install -r requirements.txt -r requirements-build.txt
+python -m PyInstaller livelyrics-backend.spec --noconfirm  # 2. standalone backend
+cd ../electron && npm ci && npm run dist:mac               # 3. -> electron/release/LiveLyrics-*.dmg
+#                                  npm run dist:win        #    -> electron/release/LiveLyrics Setup *.exe  (run on Windows)
+```
+
+A Windows installer must be built on Windows. The workflow in `.github/workflows/build-installers.yml`
+builds the `.exe` and both Mac `.dmg` files for you on GitHub (Actions tab, "Run workflow").
+
+Unsigned builds show a one-time warning: on macOS right-click the app and choose Open; on Windows choose
+"More info", then "Run anyway". Optional API keys (Groq etc.) live in the app's Settings, "API keys".
+
+---
+
 ## ✨ Features
 
 LiveLyrics provides a premium karaoke-like experience directly on your desktop, powered by intelligent audio recognition and AI.

@@ -1,258 +1,235 @@
 """
-Live Lyrics App — Flask Backend
-Main application entry point.
+LiveLyrics backend — Flask + Socket.IO.
+Serves the API, the realtime stream, and (if built) the web UI at http://localhost:5000
 """
 
-import sys
+import multiprocessing
+multiprocessing.freeze_support()   # required in the packaged app: stops Python re-launching the whole server
+
 import os
-import time
-import threading
+import sys
 
-# Add backend directory to path
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, jsonify, request
-from flask_socketio import SocketIO
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
+
 from config import Config
-from cache.chroma_cache import get_cache
-from recognition.detector import SongDetector
+from cache.store import get_cache
+from core.tracker import Tracker
 from lyrics.pipeline import fetch_lyrics
 from groq_explain.explainer import explain_lyric
+from lyrics.artwork import is_allowed, suggest, find_artwork, proxied
+from cache.store import song_key
 from translation.translate import translate_lyrics, LANGUAGES
-from websocket.events import register_events
-from websocket.sync_engine import SyncEngine
-from recognition.media_session import get_media_info
 
+DIST = os.path.abspath(Config.FRONTEND_DIST)
 
-# ── App Setup ───────────────────────────────────────
-
-app = Flask(__name__)
+app = Flask(__name__, static_folder=None)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    async_mode='threading',
-    logger=False,
-    engineio_logger=False
-)
-
-# ── Services ────────────────────────────────────────
+CORS(app, resources={r'/api/*': {'origins': '*'}})
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 cache = get_cache()
-detector = SongDetector(socketio=socketio)
-sync_engine = SyncEngine(socketio)
-
-# Register WebSocket events
-register_events(socketio, detector, cache, sync_engine)
+tracker = Tracker(socketio, cache)
 
 
-# ── Song Change Handler ─────────────────────────────
+# ── Realtime ────────────────────────────────────────
 
-def on_song_changed(song_info):
-    """Called when the detector finds a new song."""
-    title = song_info.get('title', '')
-    artist = song_info.get('artist', '')
-    album = song_info.get('album', '')
-
-    # Add to history
-    cache.add_to_history(title, artist, album)
-
-    # Check lyrics cache
-    cached_lyrics = cache.get_lyrics(title, artist)
-    if cached_lyrics:
-        print(f"[App] Using cached lyrics for '{title}'")
-        lyrics_data = cached_lyrics
-    else:
-        # Fetch lyrics from pipeline
-        lyrics_data = fetch_lyrics(title, artist, album)
-        if lyrics_data and lyrics_data.get('lines'):
-            cache.set_lyrics(title, artist, lyrics_data)
-
-    if lyrics_data and lyrics_data.get('lines'):
-        lines = lyrics_data['lines']
-
-        # Get a FRESH SMTC position right now — not the stale one from detection.
-        fresh_media = get_media_info()
-        if fresh_media and (fresh_media.get('position_ms') or 0) > 0:
-            initial_position = fresh_media['position_ms']
-        else:
-            initial_position = song_info.get('position_ms') or 0
-
-        # SMTC often reports ~14ms for new songs because YouTube/browsers
-        # haven't updated their media session yet. But we KNOW:
-        #   - Detection interval is 3s (song was playing before we noticed)
-        #   - Lyrics fetch took some time too
-        # So if SMTC says < 2s, the position is stale—add minimum compensation.
-        if initial_position < 2000:
-            compensation = int(Config.DETECTION_INTERVAL * 1000) + 2000
-            print(f"[App] SMTC position stale ({initial_position}ms < 2s), adding {compensation}ms compensation")
-            initial_position += compensation
-
-        print(f"[App] Starting sync: {len(lines)} lines, pos={initial_position}ms")
-        sync_engine.start_sync(lines, initial_position)
+@socketio.on('connect')
+def on_connect():
+    snap = tracker.snapshot()
+    if snap['song']:
+        emit('song', snap['song'])
+        emit('lyrics', snap['lyrics'])
+    emit('playback', snap['playback'])
 
 
-detector.on_song_changed = on_song_changed
-
-# Re-sync lyrics timing with SMTC position every detection cycle
-detector.on_position_update = lambda pos_ms: sync_engine.resync(pos_ms)
-
-
-def on_status_changed(status, position_ms=0):
-    """Called when the detector notices a playback status change (pause/resume)."""
-    position_ms = position_ms or 0  # Guard against None
-    if status == 'paused':
-        print('[App] Song paused — freezing lyrics')
-        sync_engine.pause()
-    elif status == 'playing':
-        print('[App] Song resumed — resuming lyrics')
-        sync_engine.resume(position_ms if position_ms > 0 else None)
-
-detector.on_status_changed = on_status_changed
+@socketio.on('request_state')
+def on_request_state():
+    on_connect()
 
 
-# ── REST API Endpoints ──────────────────────────────
+# ── REST ────────────────────────────────────────────
 
-@app.route('/api/status')
-def get_status():
-    """Get current app status."""
-    current = detector.get_current_song()
-    return jsonify({
-        'running': detector.is_running,
-        'current_song': current,
-        'position_ms': detector.get_playback_position() if current else 0,
-    })
+@app.get('/api/status')
+def status():
+    snap = tracker.snapshot()
+    return jsonify({**snap, 'platform': sys.platform,
+                    'groq': bool(Config.GROQ_API_KEY),
+                    'fingerprint': bool(Config.ACOUSTID_API_KEY and Config.FPCALC_PATH)})
 
 
-@app.route('/api/lyrics')
-def get_lyrics():
-    """Get lyrics for the current or specified song."""
-    title = request.args.get('title', '')
-    artist = request.args.get('artist', '')
-
-    if not title:
-        # Use currently playing song
-        current = detector.get_current_song()
-        if current:
-            title = current.get('title', '')
-            artist = current.get('artist', '')
-
-    if not title:
-        return jsonify({'error': 'No song specified or detected'}), 400
-
-    # Check cache
-    cached = cache.get_lyrics(title, artist)
-    if cached:
-        return jsonify(cached)
-
-    # Fetch from pipeline
-    result = fetch_lyrics(title, artist)
-    if result and result.get('lines'):
-        cache.set_lyrics(title, artist, result)
-
-    return jsonify(result)
-
-
-@app.route('/api/explain', methods=['POST'])
-def get_explanation():
-    """Get AI explanation for a lyric line."""
-    data = request.json
-    lyric_line = data.get('line', '')
-    title = data.get('title', '')
-    artist = data.get('artist', '')
-    context = data.get('context', [])
-
-    if not lyric_line:
+@app.post('/api/explain')
+def explain():
+    d = request.get_json(silent=True) or {}
+    if not d.get('line'):
         return jsonify({'error': 'No lyric line provided'}), 400
-
-    result = explain_lyric(lyric_line, title, artist, context)
-    return jsonify(result)
+    return jsonify(explain_lyric(d['line'], d.get('title', ''), d.get('artist', ''), d.get('context', [])))
 
 
-@app.route('/api/translate', methods=['POST'])
-def get_translation():
-    """Translate lyrics to target language."""
-    data = request.json
-    lines = data.get('lines', [])
-    target_lang = data.get('target_lang', 'en')
-    source_lang = data.get('source_lang', 'auto')
-
+@app.post('/api/translate')
+def translate():
+    d = request.get_json(silent=True) or {}
+    lines = d.get('lines', [])
     if not lines:
         return jsonify({'error': 'No lines provided'}), 400
-
-    result = translate_lyrics(lines, target_lang, source_lang)
-    return jsonify({'lines': result})
+    return jsonify({'lines': translate_lyrics(lines, d.get('target_lang', 'en'), d.get('source_lang', 'auto'))})
 
 
-@app.route('/api/languages')
-def get_languages():
-    """Get supported translation languages."""
+@app.get('/api/languages')
+def languages():
     return jsonify(LANGUAGES)
 
 
-@app.route('/api/history')
-def get_history():
-    """Get song playback history."""
-    limit = request.args.get('limit', 50, type=int)
-    history = cache.get_history(limit)
-    return jsonify({'history': history})
+@app.get('/api/history')
+def history():
+    items = cache.get_history(request.args.get('limit', 50, type=int))
+    missing = [h for h in items if not h['artwork']]
+    if missing:
+        _fill_covers(missing)
+    return jsonify({'history': items})
 
 
-@app.route('/api/search')
-def search_lyrics():
-    """Manual song search."""
-    title = request.args.get('title', '')
-    artist = request.args.get('artist', '')
+def _fill_covers(items):
+    """Backfill covers for songs played before we had one (cached; misses are remembered)."""
+    from concurrent.futures import ThreadPoolExecutor
 
+    def fill(h):
+        key = 'art|' + song_key(h['title'], h['artist'])
+        if cache._get('artmiss', key):
+            return
+        url = cache._get('art', key) or find_artwork(h['title'], h['artist'])
+        if not url:
+            cache._set('artmiss', key, 1)
+            return
+        cache._set('art', key, url)
+        h['artwork'] = proxied(url)
+        cache.set_history_artwork(h['title'], h['artist'], h['artwork'])
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(fill, items))
+
+
+@app.delete('/api/history')
+def clear_history():
+    cache.clear_history()
+    return jsonify({'ok': True})
+
+
+@app.post('/api/seek')
+def seek():
+    """Manual sync: 'the line at this timestamp is being sung right now'."""
+    d = request.get_json(silent=True) or {}
+    return jsonify({'ok': tracker.control('seek', float(d.get('position_sec', 0)))})
+
+
+@app.post('/api/control')
+def control():
+    d = request.get_json(silent=True) or {}
+    return jsonify({'ok': bool(tracker.control(d.get('action', '')))})
+
+
+@app.post('/api/offset')
+def offset():
+    d = request.get_json(silent=True) or {}
+    tracker.set_offset(int(d.get('offset_ms', 0)))
+    return jsonify({'ok': True})
+
+
+@app.post('/api/live')
+def live():
+    """Back to whatever the player is playing right now."""
+    return jsonify({'ok': tracker.resume_live()})
+
+
+@app.get('/api/suggest')
+def suggest_songs():
+    return jsonify({'results': suggest(request.args.get('q', ''))})
+
+
+@app.get('/api/search')
+def search():
+    title = request.args.get('title', '').strip()
+    artist = request.args.get('artist', '').strip()
     if not title:
         return jsonify({'error': 'Title required'}), 400
-
-    result = fetch_lyrics(title, artist)
-    if result and result.get('lines'):
-        cache.set_lyrics(title, artist, result)
-
-        # Emit as if detected
-        socketio.emit('song_detected', {
-            'title': title,
-            'artist': artist,
-            'album': '',
-            'source': 'manual',
-            'position_ms': 0,
-            'timestamp': time.time()
-        })
-
-        sync_engine.start_sync(result['lines'], 0)
-
-    return jsonify(result)
+    tracker.play_manual(title, artist, request.args.get('album', ''),
+                        request.args.get('artwork', ''), request.args.get('duration', 0, type=float))
+    return jsonify({'ok': True})
 
 
-# ── Main ────────────────────────────────────────────
+@app.get('/api/art')
+def art():
+    """Same-origin proxy for cover images (lets the UI sample colours from them)."""
+    import requests
+    from flask import Response
+    url = request.args.get('u', '')
+    if not is_allowed(url):
+        return ('', 400)
+    cached = _art_cache.get(url)
+    if cached is None:
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                return ('', 404)
+            cached = (r.content, r.headers.get('Content-Type', 'image/jpeg'))
+            if len(_art_cache) > 200:
+                _art_cache.clear()
+            _art_cache[url] = cached
+        except Exception:
+            return ('', 502)
+    return Response(cached[0], mimetype=cached[1], headers={'Cache-Control': 'public, max-age=86400'})
+
+
+_art_cache = {}
+
+
+_widget_proc = None
+
+
+@app.post('/api/widget/launch')
+def launch_widget():
+    """Start the Electron desktop widget (local machine only)."""
+    import subprocess
+    global _widget_proc
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return jsonify({'ok': False, 'message': 'Only available on this computer.'}), 403
+    if _widget_proc and _widget_proc.poll() is None:
+        return jsonify({'ok': True, 'message': 'Desktop widget is already running.'})
+    edir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'electron'))
+    if not os.path.isdir(os.path.join(edir, 'node_modules')):
+        return jsonify({'ok': False, 'message': 'Run `npm install` in the electron folder first.'})
+    env = {k: v for k, v in os.environ.items() if k != 'ELECTRON_RUN_AS_NODE'}
+    env['LYRICS_PORT'] = str(Config.PORT)
+    try:
+        _widget_proc = subprocess.Popen(['node', 'launch.js'], cwd=edir, env=env, start_new_session=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return jsonify({'ok': False, 'message': 'Node.js not found on PATH.'})
+    return jsonify({'ok': True, 'message': 'Desktop widget opening…'})
+
+
+# ── Web UI (production build) ───────────────────────
+
+@app.get('/', defaults={'path': ''})
+@app.get('/<path:path>')
+def web(path):
+    if os.path.isdir(DIST):
+        full = os.path.join(DIST, path)
+        if path and os.path.isfile(full):
+            return send_from_directory(DIST, path)
+        return send_from_directory(DIST, 'index.html')
+    return ('<h3>LiveLyrics backend is running.</h3><p>Build the UI with '
+            '<code>cd frontend && npm run build</code>, or run <code>npm run dev</code> '
+            'and open http://localhost:5173.</p>'), 200
+
 
 if __name__ == '__main__':
-    # Validate config
-    warnings = Config.validate()
-    for w in warnings:
+    for w in Config.validate():
         print(f"⚠ {w}")
-
-    print("\n" + "=" * 50)
-    print("  🎵 Live Lyrics App — Backend")
-    print("=" * 50)
-    print(f"  Server: http://localhost:{Config.PORT}")
-    print(f"  WebSocket: ws://localhost:{Config.PORT}")
-    print("=" * 50 + "\n")
-
-    # Start song detection
-    detector.start()
-
-    # Run the server
-    socketio.run(
-        app,
-        host=Config.HOST,
-        port=Config.PORT,
-        debug=Config.DEBUG,
-        use_reloader=False,
-        allow_unsafe_werkzeug=True
-    )
+    print(f"\n  🎵 LiveLyrics  →  http://localhost:{Config.PORT}\n")
+    tracker.start()
+    socketio.run(app, host=Config.HOST, port=Config.PORT, debug=False,
+                 use_reloader=False, allow_unsafe_werkzeug=True)

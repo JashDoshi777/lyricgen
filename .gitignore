@@ -36,3 +36,12 @@ Thumbs.db
 # Binaries
 chromaprint-fpcalc-1.6.0-windows-x86_64/
 
+
+backend/data/
+electron/node_modules/
+electron/dist/
+
+# Desktop builds
+electron/release/
+backend/dist/
+backend/build/

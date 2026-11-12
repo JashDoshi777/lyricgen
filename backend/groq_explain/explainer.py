@@ -6,7 +6,7 @@ Sends lyric lines to Groq LLM and returns meaning/emotion/explanation.
 import json
 from groq import Groq
 from config import Config
-from cache.chroma_cache import get_cache
+from cache.store import get_cache
 
 
 def explain_lyric(lyric_line, title='', artist='', context_lines=None):
@@ -68,8 +68,9 @@ Respond ONLY with valid JSON, no markdown formatting."""
                 }
             ],
             temperature=0.7,
-            max_tokens=500,
+            max_tokens=2000,
             top_p=1,
+            **({'reasoning_effort': 'low'} if 'gpt-oss' in Config.GROQ_MODEL else {}),
         )
 
         response_text = completion.choices[0].message.content.strip()

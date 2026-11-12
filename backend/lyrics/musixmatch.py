@@ -3,6 +3,7 @@ Musixmatch lyrics fetcher.
 Third fallback source using the unofficial API.
 """
 
+import os
 import requests
 from lyrics.parser import parse_plain_lyrics
 
@@ -10,7 +11,7 @@ from lyrics.parser import parse_plain_lyrics
 MUSIXMATCH_API = 'https://api.musixmatch.com/ws/1.1'
 # Use a community API key (limited, for demo purposes)
 # For production, register at https://developer.musixmatch.com/
-MUSIXMATCH_API_KEY = '68b101b27747ac13395670e4620b4c29'
+MUSIXMATCH_API_KEY = os.getenv('MUSIXMATCH_API_KEY', '68b101b27747ac13395670e4620b4c29')
 
 
 def fetch_lyrics(title, artist):
